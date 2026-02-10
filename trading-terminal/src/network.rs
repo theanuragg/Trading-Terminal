@@ -28,7 +28,7 @@ impl NetworkClient {
 }
 
 pub struct IndexerClient {
-    client: reqwest::Client,
+    pub client: reqwest::Client,
 }
 
 impl IndexerClient {

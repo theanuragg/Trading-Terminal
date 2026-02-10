@@ -1,12 +1,23 @@
 [package]
-name = "trading-terminal"
+name = "tx-terminal"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Anurag <anurags9693@gmail.com>"]
+description = "A terminal-based trading interface for Solana tokens."
+license = "MIT"
+repository = "https://github.com/theanuragg/Trading-Terminal"
+readme = "README.md"
+keywords = ["solana", "trading", "terminal", "tui", "finance"]
+categories = ["command-line-utilities", "finance"]
+
+[[bin]]
+name = "tx"
+path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1.32.0", features = ["full"] }
-ratatui = "0.26.1"
-crossterm = "0.27.0"
+ratatui = "0.29.0"
+crossterm = "0.28.1"
 clap = { version = "4.5.4", features = ["derive", "env"] }
 solana-sdk = "1.18.0"
 solana-client = "1.18.0"
@@ -18,3 +29,4 @@ anyhow = "1.0.81"
 base64 = "0.21.7"
 bincode = "1.3.3"
 rand = "0.8.5"
+
