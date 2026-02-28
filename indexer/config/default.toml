@@ -1,0 +1,24 @@
+[runtime]
+environment = "local"
+
+[api]
+bind_addr = "0.0.0.0:8080"
+
+[db]
+url = "postgres://postgres:postgres@localhost:5432/indexer"
+max_connections = 10
+
+[firehose]
+endpoint = "http://localhost:9000"
+from_slot = 0
+mint_whitelist = []
+initial_backoff_ms = 1000
+max_backoff_ms = 30000
+
+[redis]
+host = "127.0.0.1"
+port = 6379
+db = 0
+password = ""
+stream_key_prefix = "indexer:"
+max_stream_len = 10000
