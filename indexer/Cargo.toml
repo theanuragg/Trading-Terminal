@@ -1,0 +1,8 @@
+ [workspace]
+ members = [
+     "indexer-core",
+     "indexer-bin",
+     "indexer-api",
+ ]
+ resolver = "2"
+

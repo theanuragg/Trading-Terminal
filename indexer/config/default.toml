@@ -1,3 +1,13 @@
+# Solana Indexer Configuration
+# 
+# Environment Variable Overrides:
+# All values can be overridden using INDEXER__SECTION__KEY format
+# Examples:
+#   INDEXER__DB__URL=postgres://user:pass@host:5432/db
+#   INDEXER__API__BIND_ADDR=0.0.0.0:3000
+#   INDEXER__FIREHOSE__ENDPOINT=https://mainnet.example.com:443
+#   INDEXER__REDIS__HOST=redis-host
+
 [runtime]
 environment = "local"
 
@@ -5,17 +15,30 @@ environment = "local"
 bind_addr = "0.0.0.0:8080"
 
 [db]
+# Database URL - override with INDEXER__DB__URL environment variable
 url = "postgres://postgres:postgres@localhost:5432/indexer"
 max_connections = 10
 
 [firehose]
+# Jetstreamer gRPC endpoint for real blockchain data
+# Set to your Firehose Jetstreamer instance
+# Default: localhost (for local Jetstreamer Docker container)
+# Production examples:
+#   - Solana Mainnet: https://mainnet.firehose.io:443
+#   - Solana Testnet: https://testnet.firehose.io:443
+#   - Local Docker: http://localhost:9000
 endpoint = "http://localhost:9000"
+# Start streaming from this slot (0 = genesis, or use a recent slot)
 from_slot = 0
+# Optional: Filter by mint addresses (empty = all mints)
 mint_whitelist = []
+# Retry backoff settings (milliseconds)
 initial_backoff_ms = 1000
 max_backoff_ms = 30000
 
 [redis]
+# Redis configuration - override individual values as needed
+# Examples: INDEXER__REDIS__HOST, INDEXER__REDIS__PORT, INDEXER__REDIS__PASSWORD
 host = "127.0.0.1"
 port = 6379
 db = 0

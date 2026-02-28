@@ -1,0 +1,92 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: indexer-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: indexer
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - indexer-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: indexer-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - indexer-network
+
+  # Optional: Uncomment to run indexer-api service
+  # indexer-api:
+  #   build:
+  #     context: .
+  #     dockerfile: indexer/Dockerfile.indexer-api
+  #   container_name: indexer-api
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   environment:
+  #     INDEXER__DB__URL: postgres://postgres:postgres@postgres:5432/indexer
+  #     INDEXER__REDIS__HOST: redis
+  #     INDEXER__REDIS__PORT: 6379
+  #     INDEXER__API__BIND_ADDR: 0.0.0.0:8080
+  #     INDEXER__FIREHOSE__ENDPOINT: http://firehose:9000
+  #   ports:
+  #     - "8080:8080"
+  #   networks:
+  #     - indexer-network
+
+  # Optional: Uncomment to run indexer-bin service
+  # indexer-bin:
+  #   build:
+  #     context: .
+  #     dockerfile: indexer/Dockerfile.indexer-bin
+  #   container_name: indexer-bin
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   environment:
+  #     INDEXER__DB__URL: postgres://postgres:postgres@postgres:5432/indexer
+  #     INDEXER__REDIS__HOST: redis
+  #     INDEXER__REDIS__PORT: 6379
+  #     INDEXER__FIREHOSE__ENDPOINT: http://firehose:9000
+  #     RUST_LOG: info,indexer_core=debug
+  #   networks:
+  #     - indexer-network
+  #   depends_on:
+  #     - postgres
+  #     - redis
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  indexer-network:
+    driver: bridge
