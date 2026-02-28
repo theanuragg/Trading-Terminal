@@ -1,0 +1,18 @@
+ [package]
+ name = "indexer-api"
+ version = "0.1.0"
+ edition = "2021"
+
+ [dependencies]
+ indexer-core = { path = "../indexer-core" }
+ tokio = { version = "1.32.0", features = ["full"] }
+ tracing = "0.1.40"
+ tracing-subscriber = { version = "0.3.18", features = ["fmt", "env-filter"] }
+ anyhow = "1.0.81"
+axum = { version = "0.7.5", features = ["json", "ws"] }
+ serde = { version = "1.0.197", features = ["derive"] }
+ serde_json = "1.0.115"
+sqlx = { version = "0.7.4", features = ["runtime-tokio-rustls", "postgres"] }
+chrono = { version = "0.4.34", features = ["serde"] }
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+futures = "0.3"
