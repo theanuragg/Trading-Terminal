@@ -4,6 +4,7 @@ This directory contains a self-contained Rust workspace for a Jetstreamer‑styl
 
 ### 📚 Documentation Guide
 
+**System deep-dive:** [DOCUMENTATION.md](DOCUMENTATION.md) - Full indexer documentation (architecture, data flow, per-file walkthrough, special mechanisms, whitepaper, further reading)  
 **Start here:** [QUICKSTART.md](QUICKSTART.md) - Get running in 5 minutes  
 **Infrastructure:** [DOCKER_SETUP.md](DOCKER_SETUP.md) - Docker Compose configuration  
 **Blockchain:** [JETSTREAMER_SETUP.md](JETSTREAMER_SETUP.md) - Firehose endpoint configuration
