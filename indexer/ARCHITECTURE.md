@@ -236,7 +236,7 @@ sequenceDiagram
     BIN->>CACHE: DEL trades:*:* (or FLUSH keys by slot pattern)
     CACHE-->>BIN: OK
     
-    BIN->>BIN: Reset parser state; resume from slot 12345 with new block
+    BIN->>BIN: Reset parser state, resume from slot 12345 with new block
     Note over FH,BIN: Recovery latency: ~500ms (DB rollback ~50ms, Redis flush ~10ms, restart backpressure ~440ms)
 ```
 
