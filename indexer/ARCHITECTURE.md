@@ -7,6 +7,7 @@
 The Solana Indexer subsystem is a **reorg-safe, low-latency, high-throughput ingestion and query layer** for real-time token trades, balances, and market data. It serves as the authoritative single source of truth for the trading terminal, accepting Firehose-streamed blocks, parsing four protocol families (SPL Token primitives, Pump.fun bonding curves, Raydium AMM, Meteora DLMM), persisting normalized events to Postgres, maintaining real-time view caches in Redis, and exposing HTTP/WebSocket APIs via Axum.
 
 **Core invariants (non-negotiable):**
+
 - **Exactly-once processing per (signature, ix_index) tuple** via Postgres UNIQUE constraints + ON CONFLICT semantics
 - **Reorg safety within 64-slot Solana confirmation window** (confirmed slots ~95% of the time at ~400ms/slot)
 - **Sub-150ms p99 latency for WS subscribers** on real-time trade/transfer events
@@ -15,6 +16,7 @@ The Solana Indexer subsystem is a **reorg-safe, low-latency, high-throughput ing
 - **Sub-1s staleness in terminal views** via write-through Redis with 5s TTLs and slot-based invalidation
 
 **Non-goals (explicitly excluded):**
+
 - Per-instruction account state snapshots (deferred to Phase 3+)
 - Cross-program flow tracing (composability analysis deferred)
 - L1 finality guarantees per block (Solana finalizes ~95% of blocks; we checkpoint confirmed only)
@@ -23,6 +25,7 @@ The Solana Indexer subsystem is a **reorg-safe, low-latency, high-throughput ing
 ### 1.2 Current Implementation Status (March 2026)
 
 **Phase 1–2: Ingestion + Multi-Protocol Parsing (SHIPPED)**
+
 - `indexer-bin`: Firehose gRPC client + async block processor loop
 - `indexer-core`: Parsers for SPL Token (Transfer, TransferChecked, MintTo, Burn), Pump.fun bonding trades, Raydium AMM v3/v4, Meteora DLMM
 - `indexer-api`: Axum HTTP server with REST endpoints + WebSocket subscription support
@@ -32,6 +35,7 @@ The Solana Indexer subsystem is a **reorg-safe, low-latency, high-throughput ing
 - **Testing:** unit tests for each parser; integration tests via dockerized Postgres
 
 **Phase 3+ roadmap:**
+
 - Realtime OHLCV candle aggregation (TimescaleDB hypertables + continuous aggregates)
 - Whale alert detection + portfolio tracking
 - Terminal full integration (swap builder, balance sync, pending tx state)
@@ -90,6 +94,7 @@ graph LR
 ### 2.2 Component Boundaries & Responsibilities
 
 #### **indexer-bin (Entry Point & Event Loop)**
+
 - **Responsibility:** Firehose connection management, block-by-block orchestration, coordinating parsers
 - **Concurrency model:** 2-task Tokio executor
   - Task 1: `FirehoseClient::stream_blocks()` — indefinite reconnect loop with exponential backoff; sends raw `BlockRef` into bounded MPSC channel (capacity: 1024)
@@ -98,6 +103,7 @@ graph LR
 - **Trade-off:** Synchronous parser invocation (simpler error handling) vs. parallel parsing (not needed; CPU-bound parsing < 10ms/block, I/O bottleneck dominates)
 
 #### **indexer-core (Logic & Data Access)**
+
 - **Responsibility:** Instruction parsing, model serialization, database schema management, Redis client initialization
 - **Modules:**
   - `lib.rs` — public API surface
@@ -114,6 +120,7 @@ graph LR
 - **Testing:** Unit tests per parser with hardcoded block fixtures
 
 #### **indexer-api (Query & Subscription Facade)**
+
 - **Responsibility:** HTTP REST queries, WebSocket real-time subscriptions, metrics export
 - **Routes:**
   - `GET /health` — 200 OK (Kubernetes liveness)
@@ -192,6 +199,7 @@ sequenceDiagram
 ```
 
 **Latency breakdown (typical):**
+
 - Firehose gRPC delivery: ~0ms (in-band)
 - Parser execution (CPU): ~5–10ms (rayon + simd opportunities unused currently)
 - Postgres batch insert: ~20–50ms (depends on row count; COPY would be 3–5ms with 1000s rows)
@@ -212,7 +220,7 @@ sequenceDiagram
     participant BIN as indexer-bin
     
     FH->>BIN: BlockRef(12345, txs=[A, B, C])
-    BIN->>DB: INSERT transfers from [A, B, C]; UPDATE last_processed_slot = 12345
+    BIN->>DB: INSERT transfers from [A, B, C] and UPDATE last_processed_slot = 12345
     DB-->>BIN: OK (row committed at slot 12345)
     BIN->>CACHE: XADD trades:*.* {...}
     
@@ -222,7 +230,7 @@ sequenceDiagram
     BIN->>DB: SELECT stored_hash (or recompute ledger check)
     DB-->>BIN: stored_hash=X, FH_hash=Y, X != Y → REORG DETECTED
     
-    BIN->>DB: BEGIN; DELETE transfers WHERE slot > 12344; DELETE bonding_curve_trades WHERE slot > 12344; <br/>UPDATE balances (reverse deltas); UPDATE last_processed_slot = 12344;
+    BIN->>DB: BEGIN, DELETE transfers WHERE slot > 12344, DELETE bonding_curve_trades WHERE slot > 12344, <br/>UPDATE balances (reverse deltas), UPDATE last_processed_slot = 12344
     DB-->>BIN: OK (transaction committed)
     
     BIN->>CACHE: DEL trades:*:* (or FLUSH keys by slot pattern)
@@ -233,6 +241,7 @@ sequenceDiagram
 ```
 
 **Invariants enforced:**
+
 - **Slot + signature uniqueness:** UNIQUE (signature, ix_index) ensures duplicate processing fails gracefully (ON CONFLICT DO NOTHING)
 - **Blockhash comparison:** Stored in `indexer_events.payload` (JSONB) or separate slot_hash table (future Phase 3)
 - **Cascade invalidation:** All derived views (balances, candles) recomputed from transfers; Redis TTLs (5s) ensure stale cache expires
@@ -243,6 +252,7 @@ sequenceDiagram
 **Scenario:** Network sends 5,000 TPS over 400ms slot duration (12,500 total TXs per slot). Parser CPU utilization approaches 80%; Postgres write throughput saturates.
 
 **Backpressure model:**
+
 ```
 Input: Firehose gRPC stream (unbounded)
          ↓ (bounded MPSC channel, capacity=1024)
@@ -256,6 +266,7 @@ Terminal clients (drop old events if can't keep up)
 ```
 
 **Handling strategies:**
+
 1. **MPSC channel backpressure:** Firehose sender blocks if channel capacity (1024 blocks ≈ 400s of data) is exceeded. Recovery: exponential backoff reconnect.
 2. **Batch coalescing:** Parser output batched (in memory) before DB insert. If batch >1000 transfers, flush early (adaptive).
 3. **DB connection pool:** Fixed 10 connections; additional block processors queue (Tokio fair scheduler). At 100% pool utilization, add block processor tasks as needed (future autoscaling).
@@ -263,6 +274,7 @@ Terminal clients (drop old events if can't keep up)
 5. **Metrics & alerting:** Monitor `parser_queue_depth`, `db_write_latency_p99`, `ws_subscribers_dropped_count`.
 
 **SLA guarantees at sustained 3,000 TPS:**
+
 - p50 latency: 50–80ms (Firehose delivery + parsing + DB)
 - p99 latency: 120–150ms
 - Error rate: <0.1% (parser malformedness + transient DB errors)
@@ -369,12 +381,14 @@ last_processed_slot (
 ```
 
 **Index design rationale:**
+
 - **token_transfers(mint_pubkey, slot DESC):** Terminal queries recent transfers per mint (WHERE mint=? AND slot<? ORDER BY slot DESC LIMIT 100)
 - **token_transfers(signature):** TX explorer lookups (WHERE signature=?)
 - **bonding_curve_trades(mint_pubkey, slot DESC):** Recent trades per mint for OHLCV aggregation + price display
 - **indexer_events:** Postgres LISTEN/NOTIFY broadcasts but table itself is ephemeral (optional: TRUNCATE weekly if not archiving)
 
 **Constraints & triggers:**
+
 - **NOT NULL amount fields:** Enforced (parsers validate); negative amounts trap as dead-letters
 - **Foreign key mints→token_transfers:** Prevents orphaned transfers (trade-off: slower inserts by 2–3% due to FK checks; acceptable for data integrity)
 - **UNIQUE (signature, ix_index):** Ensures exact-once; ON CONFLICT DO NOTHING silently absorbs retries
@@ -440,6 +454,7 @@ channel:price_alerts
 ```
 
 **TTL policy:**
+
 - **Price cache:** 5s (terminal refresh rate)
 - **Balance cache:** 10s (portfolio staleness acceptable)
 - **Candle cache:** Varies (1m ← 1m TTL; 5m ← 5m TTL; 1h ← 60m TTL)
@@ -447,6 +462,7 @@ channel:price_alerts
 - **Hot mints:** 60s (recomputed hourly from trade volume)
 
 **Consistency semantics:**
+
 - **Eventual consistency (5s window):** Terminal sees Redis data; Postgres is source of truth
 - **Reorg invalidation:** On reorg, delete keys by slot pattern: `slot_hash:*`, `candle:*:*:*` (version mismatch), trades/transfers for rolled-back slots
 - **Partition tolerance:** Redis unavailable → fallback to Postgres direct queries (higher latency, acceptable for < 30s outages)
@@ -454,22 +470,26 @@ channel:price_alerts
 ### 4.3 Scalability & Future Schema Evolution
 
 **Phase 3 expansion:**
+
 - **TimescaleDB hypertable:** Convert `candles` into hypertable (time-partitioning + compression)
 - **Continuous aggregates:** `SELECT mint, timeframe FROM candles WHERE bucket_start >= now() - INTERVAL '24h'` → 10ms queries
 - **Archival:** Move candles older than 90 days to S3 (cold tier) via WAL-E or pg_partman
 
 **Sharding roadmap (Phase 4+):**
+
 - **By mint prefix** (first 8 chars of base58) → 58^8 mints ÷ 16 shards = ~11M mints per shard
 - **By program ID** (separate indexers for Pump, Raydium, Meteora, SPL Token)
 - **By time bucket** (candles sharded by month)
 
 **Row count projections (March 2026):**
+
 - **mints** (top 10k active): ~10k rows, ~1MB
 - **token_transfers** (mainnet SPL TPS ≈ 300): 300 TPS × 86,400 s = 26M transfers/day → 780M rows/month → IndexReorg needed after ~6 months @ 100GB limit
 - **bonding_curve_trades** (Pump 50 TPS avg): 50 TPS × 86,400 s = 4.3M trades/day → 130M rows/month → 10–15GB growth/month
 - **candles** (10k mints × 5 timeframes × 1440 1m-buckets/day): 72M rows/day → ~2.1B rows/month (compress with TimescaleDB → 50GB)
 
 **Storage escalation plan:**
+
 - **Months 1–3:** Single Postgres instance, 1TB SSD, replication OFF
 - **Months 3–6:** Read replicas for API queries + leader for writes
 - **Months 6+:** Sharding by program (separate Postgres per indexer) + TimescaleDB compression
@@ -517,6 +537,7 @@ pub struct DeadLetterRecord {
 ```
 
 **Versioning & hot-swap strategy:**
+
 - **Runtime pluggability:** Parsers registered in config (future: `parsers = ["spl_token@1.0", "pump_bonding@2.1"]`)
 - **Migration:** New parser version deployed; stale parser instances drain (no new tasks), new tasks use latest
 - **A/B testing:** Run two parser versions on same block; diff outputs; alert if divergence > threshold
@@ -526,6 +547,7 @@ pub struct DeadLetterRecord {
 **Program ID:** `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` (mainnet)
 
 **Instruction discriminators (1 byte prefix):**
+
 | Instr | Disc | Layout | Parsed Fields |
 |-------|------|--------|----------------|
 | Transfer | 3 | [accts: [src_ata, mint, dst_ata, owner]] [data: 1B disc + 8B amount LE] | src_ata, dst_ata, amount |
@@ -536,12 +558,14 @@ pub struct DeadLetterRecord {
 | BurnChecked | 14 | [accts: same] [data: 1B disc + 8B amount + 1B decimals] | same |
 
 **Invariants enforced:**
+
 - **Amount precision:** `amount >= 0` (checked; negatives → error)
 - **Decimals match:** For TransferChecked, extract decimals from data[9] and verify against known mint decimals (mismatch → warning, accept anyway for resilience)
 - **ATA validity:** source_ata, dest_ata, mint are valid Ed25519 pubkeys (29-byte check via base58 decode)
 - **Account count:** >= 3 (else skip)
 
 **Discriminator discovery (real SPL):**
+
 ```rust
 pub const INSTR_TRANSFER: u8 = 3;
 pub const INSTR_TRANSFER_CHECKED: u8 = 12;
@@ -558,6 +582,7 @@ pub const INSTR_BURN_CHECKED: u8 = 14;
 **Program ID:** `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` (mainnet)
 
 **Instruction discriminators (8-byte Anchor hash):**
+
 ```rust
 fn anchor_discriminator(ix_name: &str) -> [u8; 8] {
     // Anchor convention: SHA256("global:<name>")[..8]
@@ -572,6 +597,7 @@ pub const CREATE_DISC: [u8; 8] = anchor_discriminator("create");
 ```
 
 **Account indices (from Pump IDL):**
+
 | Ix | Acct[0] | Acct[1] | Acct[2] (Mint) | Acct[6] (User) | Notes |
 |----|---------|---------|---|---|---|
 | buy | - | - | mint PDA | trader wallet | 2 = mint, 6 = trader |
@@ -579,6 +605,7 @@ pub const CREATE_DISC: [u8; 8] = anchor_discriminator("create");
 | create | system | rent | mint (new) | mint creator | creates new bonding curve |
 
 **Data layout (buy/sell):**
+
 ```
 [0..8]: discriminator (8 bytes)
 [8..16]: token_amount (u64 LE) = tokens to buy/sell
@@ -586,6 +613,7 @@ pub const CREATE_DISC: [u8; 8] = anchor_discriminator("create");
 ```
 
 **Extracted fields:**
+
 ```rust
 pub struct BondingCurveTrade {
     pub mint: String,           // from accounts[2]
@@ -598,29 +626,34 @@ pub struct BondingCurveTrade {
 ```
 
 **Invariants:**
+
 - **Amount > 0:** token_amount, sol_amount must be positive
 - **Price sanity:** price_per_token must fit in i64 (max ~9e18); outliers logged as warnings
 - **Mint format:** Valid base58 pubkey or skip
 - **Side consistency:** "buy" only if acct[?] matches expected payer; "sell" only if acct[?] is source
 
 **Error handling:**
+
 - **Malformed data:** Missing fields or accounts → skip instruction, increment `parser_dead_letter_count[pump]`
 - **Precision loss:** token_amount=0 → price=infinity, store as 0 (conservative)
 
 ### 5.4 Raydium AMM Parser
 
-**Program IDs:** 
+**Program IDs:**
+
 - v3: `9KEPoZmtHkcsf9wXW4c6ZTwkdq4d5JZy2QTrPJWYC72`
 - v4: `675kPX9MHTjS2zt1qrNpOtSzVDfZtdztM2raKPLC5Jb`
 - Fusion: `PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjccR8DL7`
 
 **Instruction discriminators:** (first byte after Anchor 8-byte hash)
+
 | Instr | Byte | Meaning |
 |-------|------|---------|
 | SwapExactTokensForTokens | 9 | Input amount fixed, output slippage-protected |
 | SwapTokensForExactTokens | 10 | Output amount fixed, input negotiated |
 
 **Data layout (v4):**
+
 ```
 [0..8]: Anchor discriminator (8 bytes)
 [8..16]: amount_in (u64 LE)
@@ -629,6 +662,7 @@ pub struct BondingCurveTrade {
 ```
 
 **Account structure:**
+
 | Idx | Purpose |
 |-----|---------|
 | 0 | Trader wallet (signer) |
@@ -639,6 +673,7 @@ pub struct BondingCurveTrade {
 | 5+ | Authority, fee accounts, etc. (varies by version) |
 
 **Extracted fields:**
+
 ```rust
 pub struct RaydiumSwap {
     pub trader: String,          // from acct[0]
@@ -650,11 +685,13 @@ pub struct RaydiumSwap {
 ```
 
 **Invariants:**
+
 - **Amounts positive:** amount_in, amount_out > 0
 - **Pool exists:** acct[2] is valid PDA (can verify via PDA derivation in Phase 3)
 - **Token accounts:** acct[3], acct[4] are valid SPL token accounts
 
 **Direction inference heuristic:**
+
 ```rust
 fn infer_swap_direction(amount_in: u64, amount_out: u64) -> &'static str {
     // Assumption: SOL is more liquid, so if amount_out > amount_in, user is selling tokens for SOL (buy semantics)
@@ -668,12 +705,14 @@ fn infer_swap_direction(amount_in: u64, amount_out: u64) -> &'static str {
 **Program ID:** `LBUZKhRxPF3XUpBCjp4YeC6BNhu2nqBDt16ymccEZLo` (mainnet)
 
 **Instruction discriminators:**
+
 | Instr | Byte | Meaning |
 |-------|------|---------|
 | Swap (v1) | 11 | V1 swap format |
 | Swap (v2) | 22 | V2 with enhanced metadata |
 
 **Data layout (both v1 & v2):**
+
 ```
 [0]: discriminator (1 byte, 11 or 22)
 [1..9]: amount_in (u64 LE)
@@ -684,6 +723,7 @@ fn infer_swap_direction(amount_in: u64, amount_out: u64) -> &'static str {
 ```
 
 **Account structure (DLMM standard):**
+
 | Idx | Purpose |
 |-----|---------|
 | 0 | Trader wallet |
@@ -695,6 +735,7 @@ fn infer_swap_direction(amount_in: u64, amount_out: u64) -> &'static str {
 | 6+ | Signers, optional data |
 
 **Extracted fields:**
+
 ```rust
 pub struct MeteoraDLMMSwap {
     pub trader: String,          // from acct[0]
@@ -707,11 +748,13 @@ pub struct MeteoraDLMMSwap {
 ```
 
 **Invariants:**
+
 - **Bin step valid:** Must be power of 2 or standard interval (e.g., 1, 10, 25, 100, 500, 1000 basis points)
 - **Active bin reasonable:** Should be within ±256 of previous bin (prevents forking attacks on stale data)
 - **Amounts positive:** amt_in, amt_out > 0
 
 **Version detection:**
+
 ```rust
 fn infer_dlmm_version(discriminator: u8, data_len: usize) -> u32 {
     match discriminator {
@@ -729,11 +772,13 @@ fn infer_dlmm_version(discriminator: u8, data_len: usize) -> u32 {
 ### 6.1 Reorg Detection & Recovery
 
 **Detection mechanism:**
+
 1. **Firehose signals new blockhash** for slot N (different from previously processed)
 2. **Stored state check:** DB table `last_processed_slot` includes submitted blockhash (planned Phase 3); or compare slot→hash mapping in Redis
 3. **Action:** If current slot's hash != stored hash, rollback to last confirmed slot - 1
 
 **Rollback procedure (atomic transaction):**
+
 ```sql
 BEGIN;
   -- Delete all events after last known good slot
@@ -755,6 +800,7 @@ COMMIT;
 ```
 
 **Redis cleanup on reorg:**
+
 ```rust
 // Invalidate per-slot trades/transfers streams for slot > last_good_slot
 redis.del_pattern(&format!("trades:*:*:*")); // Or pattern-based deletion
@@ -763,12 +809,14 @@ redis.del_pattern(&format!("slot_hash:*")); // Flush reorg tracking
 ```
 
 **Recovery latency:**
+
 - **Reorg detection:** ~50ms (hash compare in DB)
 - **Rollback:** ~50–200ms (depends on rows affected)
 - **BIN restart:** ~100ms (reset parser state, resume from slot)
 - **CUM recovery time:** 200–350ms (acceptable; terminal already knows to await confirmation)
 
 **Frequency & handling:**
+
 - **Observed reorg rate on Solana:** ~1–5% of slots (300–1500 per day mainnet)
 - **Typical depth:** 1–3 slots (<2 seconds of data)
 - **Worst-case (rare):** 32–64 slot reorg (~13–26 seconds) → terminal UI temporarily shows stale data, recovers post-reorg
@@ -776,6 +824,7 @@ redis.del_pattern(&format!("slot_hash:*")); // Flush reorg tracking
 ### 6.2 Parser Error Handling & Dead-Letter Queues
 
 **Parser failure modes:**
+
 1. **Malformed instruction:** Data too short, invalid discriminator, account index OOB
 2. **Invalid data types:** Amount reads as negative, prices overflow i64, pubkey invalid base58
 3. **Logic error:** Heuristic wrong (e.g., direction inference fails)
@@ -790,6 +839,7 @@ redis.del_pattern(&format!("slot_hash:*")); // Flush reorg tracking
 | Logic failure (price overflow) | High | Skip, log critical, alert ops | `parser_critical_errors_total` |
 
 **Dead-letter queue (Redis ZSET):**
+
 ```rust
 // On parser error, capture record
 let dlq_record = json!({
@@ -812,6 +862,7 @@ redis.expire(&format!("dlq:{}:{}", program_name, error_class), 86400)?;
 ```
 
 **Monitoring & escalation:**
+
 - **Alert if DLQ > 100 records/hour:** Indicates parser regression or malicious txs
 - **Daily report:** DLQ stats sent to ops (aggregated by program/error)
 - **Phase 3 automation:** Auto-rollback to previous parser version if error rate > 1% in 5-minute window
@@ -819,12 +870,14 @@ redis.expire(&format!("dlq:{}:{}", program_name, error_class), 86400)?;
 ### 6.3 Database Write Failures & Retry Logic
 
 **Failure scenarios:**
+
 1. **Connection pool exhausted:** All 10 connections busy; new writer blocks on queue (OK, bounded)
 2. **Deadlock:** Two transactions waiting on same locks → PostgreSQL aborts one => retry
 3. **Constraint violation (non-unique):** Foreign key error, check constraint error → log + skip
 4. **Disk full:** Postgres read-only → immediate failover alert
 
 **DB error handling (in indexer-bin writer loop):**
+
 ```rust
 match insert_transfers(&pool, &transfers).await {
     Ok(()) => {
@@ -857,6 +910,7 @@ match insert_transfers(&pool, &transfers).await {
 ```
 
 **Retry policy:**
+
 - **Deadlock:** UP TO 3 retries, exponential backoff (10ms, 20ms, 40ms)
 - **Transient connection error:** UP TO 2 retries (100ms interval)
 - **Constraint violation:** 0 retries (skip, log)
@@ -865,10 +919,12 @@ match insert_transfers(&pool, &transfers).await {
 ### 6.4 Firehose Disconnect & Reconnection
 
 **Disconnect detection:**
+
 - GRPC stream receives `Err(_)` from tonic receiver
 - Timeout on stream read (no blocks for 60s in test net; 30s abort threshold)
 
 **Reconnection logic (exponential backoff):**
+
 ```rust
 let mut backoff_ms = config.initial_backoff_ms; // 1000
 let max_backoff_ms = config.max_backoff_ms;     // 30000
@@ -890,6 +946,7 @@ loop {
 ```
 
 **Recovery guarantees:**
+
 - **From last_processed_slot:** Firehose client tracks last seen slot in memory; on reconnect, resumes from that slot (or from DB checkpoint if restart)
 - **Worst-case resume delay:** 30s (max backoff) + Firehose startup time (~5s) + catch-up to current slot (~3–5 slots = 1.2–2 seconds) = 35–37s
 - **Data loss window:** If BIN crashes after DB write but before checkpoint update, next restart may reprocess block (idempotence + UNIQUE constraint absorbs this)
@@ -901,6 +958,7 @@ loop {
 ### 7.1 Prometheus Metrics
 
 **Ingestion pipeline:**
+
 ```
 # Firehose client metrics
 firehose_connected_gauge{endpoint="..."}              [0.0 | 1.0]
@@ -950,6 +1008,7 @@ mint_whitelist_match_rate_pct               gauge [0-100]
 ```
 
 **Query API metrics:**
+
 ```
 api_http_requests_total{endpoint="...", method="GET|POST", status="200|404|500"}     counter
 api_http_latency_seconds_histogram{endpoint="..."}                                   histogram
@@ -961,6 +1020,7 @@ api_query_hits_from_redis_pct                gauge (cache hit rate)
 ```
 
 **System health:**
+
 ```
 process_resident_memory_bytes                gauge
 process_cpu_seconds_total                    counter
@@ -977,6 +1037,7 @@ transfer_uniqueness_violations_total         counter [duplicate sig+ix_index att
 ### 7.2 Tracing Spans & Event Context
 
 **Per-block span:**
+
 ```
 trace_span!("process_block", slot = block.slot, tx_count = block.transactions.len())
   ├─ span!("parse_transfers", txs_with_spl = N, transfers_found = M)
@@ -990,11 +1051,13 @@ trace_span!("process_block", slot = block.slot, tx_count = block.transactions.le
 ```
 
 **Per-parser-error span:**
+
 ```
 warn_span!("parser_error", slot = S, tx_sig = sig, ix_index = I, program = "pump", error = "negative_amount", raw_value = -123)
 ```
 
 **Entry point (Firehose stream):**
+
 ```
 trace_span!("firehose_stream_block", endpoint = "...", slot = S, age_ms = (now - block_time_ms))
 ```
@@ -1015,6 +1078,7 @@ trace_span!("firehose_stream_block", endpoint = "...", slot = S, age_ms = (now -
 ### 7.4 Dashboard Queries (for terminal monitoring)
 
 **Real-time ingest health:**
+
 ```
 SELECT 
   (SELECT slot FROM last_processed_slot LIMIT 1) - 12500 as ingest_lag_slots,
@@ -1025,6 +1089,7 @@ CROSS JOIN bonding_curve_trades;
 ```
 
 **Top movers (by recent volume):**
+
 ```
 SELECT 
   mint_pubkey,
@@ -1040,6 +1105,7 @@ LIMIT 10;
 ```
 
 **Parser health (dead-letters):**
+
 ```
 SELECT 
   program, 
@@ -1059,12 +1125,14 @@ GROUP BY program;
 **Scenario:** Firehose endpoint is slow (network jitter, provider load); BIN receives blocks every 800ms instead of every 400ms. MPSC channel fills to capacity (1024 blocks ≈ 400s buffered). Parser backlog grows.
 
 **Recovery:**
+
 1. **Firehose sender blocks on channel.send()** (Tokio fair scheduler pauses Firehose task)
 2. **Writer loop catches up** (Postgres write latency decreases as parser loop clears queue)
 3. **Channel drains** below capacity; Firehose task resumes
 4. **Steady-state:** Parser loop processes 1 block every 400ms + 50ms DB I/O = 450ms effective ⇒ consumes network input + DB output bandwidth fairly
 
 **Latency impact:**
+
 - Normal: 100–150ms wall-clock from Firehose → WS
 - Slow Firehose: 150–300ms (channel buffering adds ~100ms latency)
 - Terminal useability: Still acceptable (<500ms)
@@ -1074,6 +1142,7 @@ GROUP BY program;
 **Scenario:** Malicious transaction crafts 6-byte instruction data (instead of min 8). Pump parser reads `ix.data[0..8]` → panics (out-of-bounds).
 
 **Mitigation (defensive programming):**
+
 ```rust
 // Pump parser
 if ix.data.len() < 8 {
@@ -1085,6 +1154,7 @@ let disc: [u8; 8] = ix.data[0..8].try_into().ok()?; // ← safe slice
 ```
 
 **Observed behavior:**
+
 - Malicious tx skipped
 - Error counter incremented
 - Dead-letter recorded
@@ -1096,6 +1166,7 @@ let disc: [u8; 8] = ix.data[0..8].try_into().ok()?; // ← safe slice
 **Scenario:** Network jitter causes Firehose to resend block 12345 twice (or BIN crashes after DB write but before checkpoint update and restarts).
 
 **Execution:**
+
 ```
 Time 1: Firehose sends BlockRef(12345, transfers=[A, B, C])
         BIN → INSERT (A, B, C) → DB: OK
@@ -1118,6 +1189,7 @@ Time 2 (restart): BIN loads last_processed_slot = 12345
 **Root cause:** Parser returns `Vec<TokenTransfer>` with only first 10 items. Writer doesn't notice.
 
 **Fix (defensive):**
+
 ```rust
 // Validate parser output before DB write
 for transfer in &all_transfers {
@@ -1133,6 +1205,7 @@ insert_transfers(&pool, &valid_transfers).await?;
 ```
 
 **Audit mechanism (Phase 3):**
+
 ```sql
 -- Nightly: verify balance correctness
 SELECT wallet, mint, 
@@ -1147,11 +1220,13 @@ WHERE expected != actual;
 **Scenario:** Redis instance crashes; BIN loses all stream data + price cache.
 
 **Impact:**
+
 - **Terminal:** WS subscribers get disconnected (Axum broadcasts on Redis Pub/Sub, fallback to graceful degradation)
 - **Queries:** API queries fallback to Postgres direct (latency increase from 5ms to 50ms, acceptable)
 - **Data integrity:** Postgres remains source of truth; no data loss
 
 **Recovery:**
+
 ```rust
 // API handler with fallback
 async fn get_latest_price(mint: &str) -> Result<Price> {
@@ -1170,6 +1245,7 @@ async fn get_latest_price(mint: &str) -> Result<Price> {
 ```
 
 **Restart Redis:**
+
 ```bash
 docker restart indexer-redis
 # BIN automatically re-connects via ConnectionManager with backoff
@@ -1181,6 +1257,7 @@ docker restart indexer-redis
 **Scenario:** Solana experiences exceptional throughput spike (5,000 TPS over 5 seconds). Firehose bursts 12,500 transactions in one slot.
 
 **Timeline:**
+
 ```
 t=0s: Firehose sends BlockRef(12345, 12,500 txs)
       Parser time: 5,000 txs / 50 txs/ms = ~100ms (needs tuning or parallelization)
@@ -1201,9 +1278,11 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
 **Scenario:** Terminal subscriber drops WS connection mid-stream (network flap). Terminal reconnects but has missed X events.
 
 **Recovery semantics:**
+
 1. **Terminal reconnects:** Opens new WS connection to `/subscribe/{mint}`
 2. **No resumption token:** WS doesn't have acknowledgment protocol (simplistic for Phase 1–2)
 3. **Solution:** Terminal backend must query recent transfers from API on reconnect:
+
    ```
    // Terminal code (pseudocode)
    on_ws_disconnect();
@@ -1211,6 +1290,7 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
    reconcile(local_state, missing);
    on_ws_reconnect();
    ```
+
 4. **Guaranteed coverage:** HTTP endpoint returns all transfers within last 60 slots (24s retention)
 
 ---
@@ -1222,12 +1302,14 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
 **Single-node sustained throughput:**
 
 **Assumption baseline (mainnet Solana):**
+
 - Average slot time: 400ms (400ms slot window)
 - ~400 transactions per slot (current mainnet average)
 - ~2 instructions per transaction (average, SPL=1, DEX=3, Minting=2)
 - **Baseline TPS:** 400 slots/s × 400 txs/slot = 160,000 TXs/s ingested
 
 **Per-component latency (critical path):**
+
 | Component | Latency | Throughput Ceiling |
 |-----------|---------|-------------------|
 | Firehose gRPC delivery | 0ms (in-band) | unlimited |
@@ -1237,11 +1319,13 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
 | **Critical path (sequential)** | 0 + 10 + 50 + 1 = 61ms | 1 block every 61ms ≈ **16.4 blocks/s** or **6,560 TXs/s** |
 
 **Observed capacity (March 2026 single node):**
+
 - **Sustained:** 3,000 TPS (conservative, with 50ms DB write + 10ms parsing per block)
 - **Burst (5s window):** 5,000 TPS (parser batching + Postgres connection fan-out)
 - **p99 latency:** 100–150ms (Firehose 0ms + parsing 10ms + DB 50ms + API 30ms + network 10ms)
 
 **Bottleneck ranking:**
+
 1. **DB write latency** (primary): Postgres batch insert scales with row count; optimize via COPY statement + connection pooling
 2. **Parser CPU** (secondary): Current parser iterates sequentially; rayon parallelization would yield 2–4x speedup
 3. **Firehose network** (tertiary): Latency from provider; usually < 100ms roundtrip
@@ -1249,6 +1333,7 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
 ### 9.2 Resource Utilization
 
 **Memory (steady-state):**
+
 - **Tokio runtime:** ~50MB (executor, task scheduler)
 - **Postgres connection pool:** 10 × 1MB = 10MB (idle connections)
 - **Redis streams:** ~100KB (10K events in memory per stream)
@@ -1257,16 +1342,19 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
 - **Total typical:** 100–200MB RSS
 
 **CPU:**
+
 - **Idle:** ~1% (Tokio polling)
 - **Process 400 TXs:** CPU spike to 50–70% for 10ms (parsing phase)
 - **Overall average:** 10–20% utilization (latency-sensitive, not throughput-maximized)
 
 **Network:**
+
 - **Firehose inbound:** ~1–2 Mbps @ 3,000 TPS (blocks ≈ 1–2MB each, every 400ms)
 - **Redis pub/sub outbound:** ~ 100–200 Kbps (event fanout to subscribers)
 - **HTTP API outbound (if queried):** ~10–50 Mbps (depends on client query volume)
 
 **Storage:**
+
 - **Postgres disk:** ~1GB transferred per day @ 3,000 TPS average
   - token_transfers: 3,000 TPS × 86,400s = 259M rows/day (assuming all ingestable TXs are transfers, underestimate)
   - Row size: ~200 bytes → 52GB/day (uncompressed)
@@ -1276,17 +1364,20 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
 ### 9.3 Scaling Strategies
 
 **Vertical scaling (single machine):**
+
 - Upgrade CPU (e.g. 8-core → 16-core): Parser parallelization with rayon → 2–3x throughput
 - Upgrade RAM (e.g. 32GB → 64GB): Larger block buffer + connection pool → handle bursts better
 - Upgrade storage (e.g. SSD → NVMe): Postgres write speed improve → +20–30%
 - **Ceiling:** ~10,000 TPS single machine (with optimizations)
 
 **Horizontal scaling (Phase 4):**
+
 - **Shard by program ID:** Separate indexer-bin instances for {SPL, Pump, Raydium, Meteora} → each independently process instructions → aggregate results in single Postgres
 - **Shard by mint prefix:** Separate indexer-bin for mint pubkey ranges → mint(0–9B), mint(9B–12B), etc. → sharded Postgres with foreign key routing
 - **Fleet:** 4–8 indexer-bin instances × 2–3 Postgres replicas = N × 3,000 TPS = 12,000–24,000 TPS
 
 **Trade-offs:**
+
 - **Vertical:** Simpler ops, lower latency (<150ms network hops); ceiling ~10K TPS
 - **Horizontal:** Higher throughput (100K+ TPS possible); higher complexity (sharding keys, data consistency, failover orchestration)
 
@@ -1297,10 +1388,12 @@ t=150ms+: Firehose resumes sending slot 12346 (queued behind channel backpressur
 ### 10.1 Phase 3: OHLCV Aggregation & Real-Time Candles
 
 **New components:**
+
 - **Continuous aggregate engine:** Materialize candles every 1, 5, 15, 60, 240, 1440 minutes
 - **TimescaleDB migration:** Convert candles table to hypertable; enable time-based partitioning + compression
 
 **New schema:**
+
 ```sql
 -- Hypertable (TimescaleDB)
 SELECT create_hypertable('candles', 'bucket_start', if_not_exists => TRUE, 
@@ -1328,14 +1421,17 @@ SELECT add_continuous_aggregate_policy('candles_1m', start_offset => '1 minute',
 ```
 
 **Parser enhancement:**
+
 - **Candle cache invalidation:** On reorg, delete candles for slot range (or version field)
 
 **Query performance:**
+
 - Direct continuous aggregate query: <10ms for 24h of 1m candles (vs 1000ms on raw bonding trades table)
 
 ### 10.2 Phase 4: Whale Alerts & Portfolio Tracking
 
 **New tables:**
+
 ```sql
 CREATE TABLE whale_watches (
     id UUID PRIMARY KEY,
@@ -1365,6 +1461,7 @@ CREATE TABLE portfolio_snapshots (
 ```
 
 **Compute job (runs every 5 minutes):**
+
 ```rust
 // Pseudo-code
 for whale in whale_watches {
@@ -1382,6 +1479,7 @@ for whale in whale_watches {
 ### 10.3 Phase 5: Terminal Integration & Swap Flow
 
 **Swap builder flow:**
+
 1. Terminal UI requests balance refresh → `/portfolio/:wallet` → returns latest balances from Redis (5s stale)
 2. User configures swap (e.g., "swap 100 USDC for SOL")
 3. Terminal calls `/simulate_swap` (Phase 5 new endpoint) → queries current price + slippage from Redis candles + Raydium pool data → returns expected output
@@ -1390,6 +1488,7 @@ for whale in whale_watches {
 6. Terminal polls `/status/{tx_sig}` until trade appears (or timeout)
 
 **New metrics:**
+
 - swap_builder_latency_p99_ms
 - terminal_refresh_lag_ms (time from balance change → terminal UI update via WS)
 
@@ -1525,6 +1624,7 @@ curl http://localhost:8080/debug/state
 ### 13.2 Deployment Steps
 
 1. **Provision infrastructure:**
+
    ```bash
    docker-compose up -d postgres redis
    # Wait for containers healthy
@@ -1532,12 +1632,14 @@ curl http://localhost:8080/debug/state
    ```
 
 2. **Initialize database:**
+
    ```bash
    cargo run --release --bin indexer-bin -- migrate
    # Runs sqlx embedded migrations
    ```
 
 3. **Start indexer-bin:**
+
    ```bash
    INDEXER__FIREHOSE__ENDPOINT="https://mainnet.firehose.io:443" \
    INDEXER__DB__URL="postgres://user:pass@postgres:5432/indexer" \
@@ -1546,18 +1648,21 @@ curl http://localhost:8080/debug/state
    ```
 
 4. **Start indexer-api (separate terminal/container):**
+
    ```bash
    INDEXER__DB__URL="postgres://..." \
    cargo run --release --bin indexer-api
    ```
 
 5. **Verify ingestion:**
+
    ```bash
    curl http://localhost:8080/metrics | grep ingest_lag_slots_gauge
    # Should see: ingest_lag_slots_gauge 5 (or similar, < 100)
    ```
 
 6. **Configure terminal to point to API:**
+
    ```
    API_ENDPOINT=http://localhost:8080
    ```
@@ -1602,6 +1707,7 @@ curl http://localhost:8080/debug/state
 **END OF DOCUMENT**
 
 **Total specification:**
+
 - Mission: Exactly-once, reorg-safe, low-latency SPL token + bonding curve indexer
 - Current status: 4 parsers live, 3,000 TPS single-node, 100–150ms WS latency
 - Roadmap: Phase 3 OHLCV aggregation, Phase 4 whale alerts, Phase 5 terminal full integration
