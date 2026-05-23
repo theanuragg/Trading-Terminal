@@ -1,5 +1,11 @@
 pub mod app;
 pub mod config;
 pub mod network;
+pub mod panels;
 pub mod swap;
+pub mod theme;
+pub mod time_utils;
 pub mod ui;
+pub mod ui_charts;
+pub mod utils;
+pub mod wallet;
